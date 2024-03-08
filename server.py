@@ -1,10 +1,12 @@
 import socket
 import sqlite3
 import sys
+import threading
 
 # Define server address and port
 SERVER_HOST = '127.0.0.1'
 SERVER_PORT = 12345
+
 
 # Connect to SQLite database
 conn = sqlite3.connect('database.db')
@@ -42,10 +44,13 @@ if not existing_user:
                    ('John', 'Doe', 'jd', 'password', 100.0))
     conn.commit()
 
+# Close database connection after initial setup
+conn.close()
+
 
 # Define functions to process different commands
 
-def process_buy_command(command_parts):
+def process_buy_command(conn, cursor, command_parts):
     # Extract relevant information from command_parts and cast to appropriate types
     try:
         ticker = command_parts[1]
@@ -104,7 +109,7 @@ def process_buy_command(command_parts):
         response = f"200 OK\nBOUGHT: New balance: {updated_stock_balance} {ticker}. USD balance ${new_balance}"
         return response
 
-def process_sell_command(command_parts):
+def process_sell_command(conn, cursor, command_parts):
     # Extract relevant information from command_parts and cast to appropriate types
     try:
         ticker = command_parts[1]
@@ -155,7 +160,7 @@ def process_sell_command(command_parts):
     response = f"200 OK\nSOLD: New balance: {updated_stock_balance} {ticker}. USD balance ${new_balance}"
     return response
 
-def process_list_command():
+def process_list_command(cursor):
     # Fetch all records from the Stocks table
     cursor.execute("SELECT * FROM Stocks")
     stocks_data = cursor.fetchall()
@@ -170,7 +175,7 @@ def process_list_command():
 
     return response
 
-def process_balance_command():
+def process_balance_command(cursor):
     # Fetch all records from the Users table
     cursor.execute("SELECT * FROM Users")
     users_data = cursor.fetchall()
@@ -191,16 +196,29 @@ def process_balance_command():
 
     return response
 
-# Accept only one client
-server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-server_socket.bind((SERVER_HOST, SERVER_PORT))
-server_socket.listen(1)
-print(f"[*] Listening on {SERVER_HOST}:{SERVER_PORT}")
+def process_login_command(cursor, user_name, password):
+    # Select the user with a matching username and password
+    cursor.execute("SELECT * FROM Users WHERE user_name = ? AND password = ?", (user_name, password))
+    user = cursor.fetchone()
+    if user:
+        # Correct login
+        return "200 OK", user[0]  # Return the user ID as well for future commands
+    else:
+        # Incorrect login
+        return "403 Wrong UserID or Password", None
 
-while True:
-    try: 
-        client_socket, client_address = server_socket.accept()
+def handle_client(client_socket, client_address):
+
+    # Initialize the user_id as None to indicate that the client is not logged in
+    user_id = None
+
+
+    try:
         print(f"[*] Accepted connection from {client_address[0]}:{client_address[1]}")
+
+        # Individual connections to the database
+        conn = sqlite3.connect('database.db')
+        cursor = conn.cursor()
 
         # Handle client requests
         while True:
@@ -217,39 +235,69 @@ while True:
             # Ensure the command is valid and has the correct format
             if len(command_parts) < 1:
                 response = "403 message format error"
+            elif user_id is None and command_parts[0] != "QUIT":
+                if command_parts[0] == "LOGIN":
+                    if len(command_parts) != 3:
+                        response = "400 invalid command, missing arguments"
+                    else:
+                        response, user_id = process_login_command(cursor, command_parts[1], command_parts[2])
+                else:
+                    response = "403 not logged in, please login first"
             else:
                 command = command_parts[0]
+
                 if command == "BUY":
-                    response = process_buy_command(command_parts)
+                    response = process_buy_command(conn, cursor, command_parts)
                 elif command == "SELL":
-                    response = process_sell_command(command_parts)
+                    response = process_sell_command(conn, cursor, command_parts)
                 elif command == "LIST":
-                    response = process_list_command()
+                    response = process_list_command(cursor)
                 elif command == "BALANCE":
-                    response = process_balance_command()
+                    response = process_balance_command(cursor)
+                elif command == "QUIT":
+                    response = "200 OK"
+                    client_socket.send(response.encode())
+                    client_socket.close()
+                    break
                 elif command == "SHUTDOWN":
                     response = "200 OK"
                     client_socket.send(response.encode())
                     client_socket.close()
-                    server_socket.close()
-                    conn.close()
-                    sys.exit()
+                    break
                 else:
                     response = "400 invalid command"
                 
             # Send the response back to the client
             client_socket.send(response.encode())
+            
 
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
+    finally:
+        # Close client socket
+        client_socket.close()
+
+        # Close database connection
+        conn.close()
+
+# Create a server socket
+server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server_socket.bind((SERVER_HOST, SERVER_PORT))
+server_socket.listen(10)
+print(f"[*] Listening on {SERVER_HOST}:{SERVER_PORT}")
+
+# Accept multiple clients using threads
+while True:
+    try:
+        client_socket, client_address = server_socket.accept()
+        client_thread = threading.Thread(target=handle_client, args=(client_socket, client_address))
+        client_thread.start()
     except KeyboardInterrupt:
         print("\n[*] Interrupted by user, exiting.")
         break
     except Exception as e:
         print(f"An error occurred: {e}")
-        break
-        
 
-    # Close socket
-    client_socket.close()
-
-# Close database connection
-conn.close()
+# Close server socket
+server_socket.close()
