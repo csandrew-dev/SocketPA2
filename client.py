@@ -25,9 +25,12 @@ while True:
             continue  # Skip empty input
 
         # Send command to server
-        if command.upper() == "QUIT":
+        if command == "QUIT":
             client_socket.send(command.encode())
             print(f"[*] Sent: {command}")
+            response = client_socket.recv(1024).decode().strip()
+            print(f"[*] Server response: {response}")
+            client_socket.close()
             break
         else:
             client_socket.send(command.encode())
