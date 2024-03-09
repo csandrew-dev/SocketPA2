@@ -160,9 +160,25 @@ def process_sell_command(conn, cursor, command_parts):
     response = f"200 OK\nSOLD: New balance: {updated_stock_balance} {ticker}. USD balance ${new_balance}"
     return response
 
-def process_list_command(cursor):
+def process_list_command(user_id, cursor):
     # Fetch all records from the Stocks table
-    cursor.execute("SELECT * FROM Stocks")
+    if user_id == 2:
+        # If the user is root, fetch stock data with user names for all users
+        cursor.execute('''
+            SELECT Stocks.ID, Stocks.stock_symbol, Stocks.stock_name, Stocks.stock_balance,
+                   Users.first_name, Users.last_name
+            FROM Stocks
+            JOIN Users ON Users.ID = Stocks.user_id
+        ''')
+    else:
+        # If the user is not root, fetch only the stock data pertaining to the user
+        cursor.execute('''
+            SELECT Stocks.ID, Stocks.stock_symbol, Stocks.stock_name, Stocks.stock_balance,
+                   Users.first_name, Users.last_name
+            FROM Stocks
+            JOIN Users ON Users.ID = Stocks.user_id
+            WHERE Stocks.user_id = ?
+        ''', (user_id,))
     stocks_data = cursor.fetchall()
 
     if not stocks_data:
@@ -170,14 +186,24 @@ def process_list_command(cursor):
 
     # Generate the response message with the list of records
     response = "200 OK\n"
-    for row in stocks_data:
-        response += f"{row[0]}. {row[1]} {row[3]} {row[4]}\n"
+    # for row in stocks_data:
+    #     response += f"{row[0]}. {row[1]} {row[3]} {row[4]}\n"
+    for stock in stocks_data:
+        user_full_name = f"{stock[4]} {stock[5]}" if stock[4] and stock[5] else "Unknown User"
+        if user_id == 2:
+            response += f"{stock[0]} {stock[1]} {stock[3]} {user_full_name}\n"
+        else:
+            response += f"{stock[0]} {stock[1]} {stock[3]}\n"
 
     return response
 
-def process_balance_command(cursor):
+
+def process_balance_command(user_id, cursor):
     # Fetch all records from the Users table
-    cursor.execute("SELECT * FROM Users")
+    if user_id == 2:
+        cursor.execute("SELECT * FROM Users")
+    else:
+        cursor.execute("SELECT * FROM Users WHERE ID = ?", (user_id,))
     users_data = cursor.fetchall()
 
     if not users_data:
@@ -251,9 +277,9 @@ def handle_client(client_socket, client_address):
                 elif command == "SELL":
                     response = process_sell_command(conn, cursor, command_parts)
                 elif command == "LIST":
-                    response = process_list_command(cursor)
+                    response = process_list_command(user_id, cursor)
                 elif command == "BALANCE":
-                    response = process_balance_command(cursor)
+                    response = process_balance_command(user_id, cursor)
                 elif command == "QUIT":
                     response = "200 OK"
                     client_socket.send(response.encode())
