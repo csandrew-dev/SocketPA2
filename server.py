@@ -1,14 +1,23 @@
 import socket
 import sqlite3
 import sys
+import threading
 
 # Define server address and port
 SERVER_HOST = '127.0.0.1'
 SERVER_PORT = 12345
 
+# A global variable to keep track of whether the server is running
+is_server_running = True
+
+# Define a list to keep track of all the client threads
+client_threads = []
+
 # Connect to SQLite database
-conn = sqlite3.connect('database.db')
-cursor = conn.cursor()
+with sqlite3.connect('database.db') as conn:
+    cursor = conn.cursor()
+    # Your database operations...
+    # No need to explicitly close the connection; it will be closed automatically.
 
 # Create tables if not exist
 cursor.execute('''
@@ -39,13 +48,27 @@ existing_user = cursor.fetchone()
 
 if not existing_user:
     cursor.execute("INSERT INTO Users (first_name, last_name, user_name, password, usd_balance) VALUES (?, ?, ?, ?, ?)",
-                   ('John', 'Doe', 'jd', 'password', 100.0))
+                           ('John', 'Doe', 'jd', 'password', 100.0))
     conn.commit()
+
+# Insert root user for testing shutdown
+cursor.execute("SELECT * FROM Users WHERE user_name = ?", ('root',))
+root_user = cursor.fetchone()
+
+if not root_user:
+    cursor.execute("INSERT INTO Users (first_name, last_name, user_name, password, usd_balance) VALUES (?, ?, ?, ?, ?)",
+                           ('Root', 'User', 'root', 'rootpassword', 1000000.0))
+    conn.commit()
+
+
+# Close database connection after initial setup
+conn.close()
+
 
 
 # Define functions to process different commands
 
-def process_buy_command(command_parts):
+def process_buy_command(conn, cursor, command_parts):
     # Extract relevant information from command_parts and cast to appropriate types
     try:
         ticker = command_parts[1]
@@ -104,7 +127,7 @@ def process_buy_command(command_parts):
         response = f"200 OK\nBOUGHT: New balance: {updated_stock_balance} {ticker}. USD balance ${new_balance}"
         return response
 
-def process_sell_command(command_parts):
+def process_sell_command(conn, cursor, command_parts):
     # Extract relevant information from command_parts and cast to appropriate types
     try:
         ticker = command_parts[1]
@@ -155,9 +178,25 @@ def process_sell_command(command_parts):
     response = f"200 OK\nSOLD: New balance: {updated_stock_balance} {ticker}. USD balance ${new_balance}"
     return response
 
-def process_list_command():
+def process_list_command(user_id, cursor):
     # Fetch all records from the Stocks table
-    cursor.execute("SELECT * FROM Stocks")
+    if user_id == 2:
+        # If the user is root, fetch stock data with user names for all users
+        cursor.execute('''
+            SELECT Stocks.ID, Stocks.stock_symbol, Stocks.stock_name, Stocks.stock_balance,
+                   Users.first_name, Users.last_name
+            FROM Stocks
+            JOIN Users ON Users.ID = Stocks.user_id
+        ''')
+    else:
+        # If the user is not root, fetch only the stock data pertaining to the user
+        cursor.execute('''
+            SELECT Stocks.ID, Stocks.stock_symbol, Stocks.stock_name, Stocks.stock_balance,
+                   Users.first_name, Users.last_name
+            FROM Stocks
+            JOIN Users ON Users.ID = Stocks.user_id
+            WHERE Stocks.user_id = ?
+        ''', (user_id,))
     stocks_data = cursor.fetchall()
 
     if not stocks_data:
@@ -165,14 +204,24 @@ def process_list_command():
 
     # Generate the response message with the list of records
     response = "200 OK\n"
-    for row in stocks_data:
-        response += f"{row[0]}. {row[1]} {row[3]} {row[4]}\n"
+    # for row in stocks_data:
+    #     response += f"{row[0]}. {row[1]} {row[3]} {row[4]}\n"
+    for stock in stocks_data:
+        user_full_name = f"{stock[4]} {stock[5]}" if stock[4] and stock[5] else "Unknown User"
+        if user_id == 2:
+            response += f"{stock[0]} {stock[1]} {stock[3]} {user_full_name}\n"
+        else:
+            response += f"{stock[0]} {stock[1]} {stock[3]}\n"
 
     return response
 
-def process_balance_command():
+
+def process_balance_command(user_id, cursor):
     # Fetch all records from the Users table
-    cursor.execute("SELECT * FROM Users")
+    if user_id == 2:
+        cursor.execute("SELECT * FROM Users")
+    else:
+        cursor.execute("SELECT * FROM Users WHERE ID = ?", (user_id,))
     users_data = cursor.fetchall()
 
     if not users_data:
@@ -191,16 +240,45 @@ def process_balance_command():
 
     return response
 
-# Accept only one client
-server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-server_socket.bind((SERVER_HOST, SERVER_PORT))
-server_socket.listen(1)
-print(f"[*] Listening on {SERVER_HOST}:{SERVER_PORT}")
+def process_login_command(cursor, user_name, password):
+    # Select the user with a matching username and password
+    cursor.execute("SELECT * FROM Users WHERE user_name = ? AND password = ?", (user_name, password))
+    user = cursor.fetchone()
+    if user:
+        # Correct login
+        return "200 OK", user[0]  # Return the user ID as well for future commands
+    else:
+        # Incorrect login
+        return "403 Wrong UserID or Password", None
+    
 
-while True:
-    try: 
-        client_socket, client_address = server_socket.accept()
+def handle_shutdown_command(user_id, cursor):
+    # Check if the user is root
+    cursor.execute("SELECT ID FROM Users WHERE user_name = 'root'")
+    root_user_id = cursor.fetchone()[0]
+    if user_id == root_user_id:
+        global is_server_running
+        # Shutdown server and disconnect all clients
+        print("Server shutdown initiated. All connected clients will be terminated.")
+        is_server_running = False  # Set the variable to False to stop the server loop
+        return "Server is shutting down."
+    else:
+        return "Error: Only the root user has the authority to execute a server shutdown."
+
+
+
+
+def handle_client(client_socket, client_address):
+    global is_server_running
+    # Initialize the user_id as None to indicate that the client is not logged in
+    user_id = None
+
+    try:
         print(f"[*] Accepted connection from {client_address[0]}:{client_address[1]}")
+
+        # Individual connections to the database
+        conn = sqlite3.connect('database.db')
+        cursor = conn.cursor()
 
         # Handle client requests
         while True:
@@ -217,39 +295,71 @@ while True:
             # Ensure the command is valid and has the correct format
             if len(command_parts) < 1:
                 response = "403 message format error"
+            elif user_id is None and command_parts[0] != "QUIT":
+                if command_parts[0] == "LOGIN":
+                    if len(command_parts) != 3:
+                        response = "400 invalid command, missing arguments"
+                    else:
+                        response, user_id = process_login_command(cursor, command_parts[1], command_parts[2])
+                else:
+                    response = "403 not logged in, please login first"
             else:
                 command = command_parts[0]
+
                 if command == "BUY":
-                    response = process_buy_command(command_parts)
+                    response = process_buy_command(conn, cursor, command_parts)
                 elif command == "SELL":
-                    response = process_sell_command(command_parts)
+                    response = process_sell_command(conn, cursor, command_parts)
                 elif command == "LIST":
-                    response = process_list_command()
+                    response = process_list_command(user_id, cursor)
                 elif command == "BALANCE":
-                    response = process_balance_command()
-                elif command == "SHUTDOWN":
+                    response = process_balance_command(user_id, cursor)
+                elif command == "QUIT":
                     response = "200 OK"
                     client_socket.send(response.encode())
                     client_socket.close()
-                    server_socket.close()
-                    conn.close()
-                    sys.exit()
+                    break
+                elif command == "SHUTDOWN":
+                    response = handle_shutdown_command("root", True)
+                    client_socket.send(response.encode())
+                    client_socket.close()
+                    break
                 else:
                     response = "400 invalid command"
                 
             # Send the response back to the client
             client_socket.send(response.encode())
+            
 
-    except KeyboardInterrupt:
-        print("\n[*] Interrupted by user, exiting.")
-        break
     except Exception as e:
         print(f"An error occurred: {e}")
+
+    finally:
+        # Close client socket
+        client_socket.close()
+
+        # Close database connection
+        conn.close()
+
+# Create a server socket
+server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server_socket.bind((SERVER_HOST, SERVER_PORT))
+server_socket.listen(10)
+print(f"[*] Listening on {SERVER_HOST}:{SERVER_PORT}")
+
+# Accept multiple clients using threads
+while is_server_running:
+    try:
+        client_socket, client_address = server_socket.accept()
+        client_thread = threading.Thread(target=handle_client, args=(client_socket, client_address))
+        client_thread.start()
+        client_threads.append(client_thread)  # Add the thread to the client_threads list
+    except KeyboardInterrupt:
+        print("\n[*] Interrupted by user, initiating server shutdown.")
         break
-        
+    except socket.error:
+        if not is_server_running:
+            break  # Break if socket error occurs due to shutdown
 
-    # Close socket
-    client_socket.close()
-
-# Close database connection
-conn.close()
+# Close server socket
+server_socket.close()
