@@ -251,6 +251,28 @@ def process_login_command(cursor, user_name, password):
         # Incorrect login
         return "403 Wrong UserID or Password", None
     
+def process_help_command(user_id=None):
+    if user_id is None:
+        help_message = """
+        To use the system, please log in using the following command:
+        LOGIN <user_name> <password>
+
+        Once logged in, you can access additional commands and get further help.
+        """
+    else:
+        help_message = """
+        Available Commands:
+    - LOGIN <user_name> <password>: Log in with your username and password.
+    - BUY <stock_symbol> <amount> <price> <user_id>: Buy stocks with the specified amount, price, and user ID.
+    - SELL <stock_symbol> <amount> <price> <user_id>: Sell stocks with the specified amount, price, and user ID.
+    - LIST [<user_id>]: List all stocks. If no user ID is provided, list all stocks for the logged-in user.
+    - BALANCE [<user_id>]: Display the balance. If no user ID is provided, display the balance for the logged-in user.
+    - HELP: Display this help message.
+    - QUIT: Terminate the connection.
+    - SHUTDOWN: Shutdown the server (only accessible to the root user).
+        """
+
+    return help_message
 
 def handle_shutdown_command(user_id, cursor):
     # Check if the user is root
@@ -295,6 +317,8 @@ def handle_client(client_socket, client_address):
             # Ensure the command is valid and has the correct format
             if len(command_parts) < 1:
                 response = "403 message format error"
+            elif command_parts[0] == "HELP":
+                response = process_help_command(user_id)
             elif user_id is None and command_parts[0] != "QUIT":
                 if command_parts[0] == "LOGIN":
                     if len(command_parts) != 3:
@@ -302,7 +326,7 @@ def handle_client(client_socket, client_address):
                     else:
                         response, user_id = process_login_command(cursor, command_parts[1], command_parts[2])
                 else:
-                    response = "403 not logged in, please login first"
+                    response = process_help_command()
             else:
                 command = command_parts[0]
 
@@ -314,6 +338,8 @@ def handle_client(client_socket, client_address):
                     response = process_list_command(user_id, cursor)
                 elif command == "BALANCE":
                     response = process_balance_command(user_id, cursor)
+                elif command == "HELP":
+                    response = process_help_command(user_id)
                 elif command == "QUIT":
                     response = "200 OK"
                     client_socket.send(response.encode())
@@ -326,10 +352,9 @@ def handle_client(client_socket, client_address):
                     break
                 else:
                     response = "400 invalid command"
-                
+
             # Send the response back to the client
             client_socket.send(response.encode())
-            
 
     except Exception as e:
         print(f"An error occurred: {e}")
