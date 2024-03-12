@@ -1,3 +1,4 @@
+# Import necessary libraries
 import socket
 import sqlite3
 import sys
@@ -13,13 +14,14 @@ is_server_running = True
 # Define a list to keep track of all the client threads
 client_threads = []
 
-# Connect to SQLite database
-with sqlite3.connect('database.db') as conn:
-    cursor = conn.cursor()
-    # Your database operations...
-    # No need to explicitly close the connection; it will be closed automatically.
+# Define a lock for database access
+db_lock = threading.Lock()
 
-# Create tables if not exist
+# Connect to SQLite database
+conn = sqlite3.connect('database.db')
+cursor = conn.cursor()
+
+# Create tables if they do not exist
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS Users (
         ID INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,13 +44,23 @@ cursor.execute('''
     )
 ''')
 
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS ActiveUsers (
+        ID INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        user_name TEXT NOT NULL,
+        ip_address TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES Users (ID)
+    )
+''')
+
 # Insert default user into Users table
 cursor.execute("SELECT * FROM Users WHERE user_name = ?", ('jd',))
 existing_user = cursor.fetchone()
 
 if not existing_user:
     cursor.execute("INSERT INTO Users (first_name, last_name, user_name, password, usd_balance) VALUES (?, ?, ?, ?, ?)",
-                           ('John', 'Doe', 'jd', 'password', 100.0))
+                   ('John', 'Doe', 'jd', 'password', 100.0))
     conn.commit()
 
 # Insert root user for testing shutdown
@@ -57,18 +69,19 @@ root_user = cursor.fetchone()
 
 if not root_user:
     cursor.execute("INSERT INTO Users (first_name, last_name, user_name, password, usd_balance) VALUES (?, ?, ?, ?, ?)",
-                           ('Root', 'User', 'root', 'rootpassword', 1000000.0))
+                   ('Root', 'User', 'root', 'rootpassword', 1000000.0))
     conn.commit()
 
-
 # Close database connection after initial setup
-conn.close()
-
+# conn.close()
 
 
 # Define functions to process different commands
 
 def process_buy_command(conn, cursor, command_parts):
+    """
+    Process the 'BUY' command to buy stocks.
+    """
     # Extract relevant information from command_parts and cast to appropriate types
     try:
         ticker = command_parts[1]
@@ -128,6 +141,9 @@ def process_buy_command(conn, cursor, command_parts):
         return response
 
 def process_sell_command(conn, cursor, command_parts):
+    """
+    Process the 'SELL' command to sell stocks.
+    """
     # Extract relevant information from command_parts and cast to appropriate types
     try:
         ticker = command_parts[1]
@@ -178,13 +194,27 @@ def process_sell_command(conn, cursor, command_parts):
     response = f"200 OK\nSOLD: New balance: {updated_stock_balance} {ticker}. USD balance ${new_balance}"
     return response
 
+def list_records(user_id, is_root, cursor):
+    """
+    List records from the database
+
+.
+    """
+    if is_root:
+        return process_list_command(user_id=2, cursor=cursor)  # Assuming root user ID is 2
+    else:
+        return process_list_command(user_id=user_id, cursor=cursor)
+
 def process_list_command(user_id, cursor):
+    """
+    Process the 'LIST' command to list all stocks.
+    """
     # Fetch all records from the Stocks table
-    if user_id == 2:
+    if user_id == 5:
         # If the user is root, fetch stock data with user names for all users
         cursor.execute('''
             SELECT Stocks.ID, Stocks.stock_symbol, Stocks.stock_name, Stocks.stock_balance,
-                   Users.first_name, Users.last_name
+                   Users.first_name, Users.last_name, Users.user_name
             FROM Stocks
             JOIN Users ON Users.ID = Stocks.user_id
         ''')
@@ -204,19 +234,19 @@ def process_list_command(user_id, cursor):
 
     # Generate the response message with the list of records
     response = "200 OK\n"
-    # for row in stocks_data:
-    #     response += f"{row[0]}. {row[1]} {row[3]} {row[4]}\n"
     for stock in stocks_data:
-        user_full_name = f"{stock[4]} {stock[5]}" if stock[4] and stock[5] else "Unknown User"
-        if user_id == 2:
-            response += f"{stock[0]} {stock[1]} {stock[3]} {user_full_name}\n"
+        if user_id == 5:
+            user_full_name = f"{stock[4]} {stock[5]}" if stock[4] and stock[5] else "Unknown User"
+            response += f"{stock[0]} {stock[1]} {stock[3]} {user_full_name} {stock[6]}\n"
         else:
             response += f"{stock[0]} {stock[1]} {stock[3]}\n"
 
     return response
 
-
 def process_balance_command(user_id, cursor):
+    """
+    Process the 'BALANCE' command to display user balances.
+    """
     # Fetch all records from the Users table
     if user_id == 2:
         cursor.execute("SELECT * FROM Users")
@@ -240,18 +270,39 @@ def process_balance_command(user_id, cursor):
 
     return response
 
-def process_login_command(cursor, user_name, password):
-    # Select the user with a matching username and password
-    cursor.execute("SELECT * FROM Users WHERE user_name = ? AND password = ?", (user_name, password))
-    user = cursor.fetchone()
-    if user:
-        # Correct login
-        return "200 OK", user[0]  # Return the user ID as well for future commands
-    else:
-        # Incorrect login
-        return "403 Wrong UserID or Password", None
+def process_login_command(user_name, password, client_address):
+    """
+    Process the 'LOGIN' command to log in users.
+    """
+    try:
+        with sqlite3.connect('database.db') as conn:
+            cursor = conn.cursor()
+            # Select the user with a matching username and password
+            cursor.execute("SELECT * FROM Users WHERE user_name = ? AND password = ?", (user_name, password))
+            user = cursor.fetchone()
+            if user:
+                # Correct login
+                user_id = user[0]
+                cursor.execute("INSERT INTO ActiveUsers (user_id, user_name, ip_address) VALUES (?, ?, ?)",
+                                (user_id, user_name, client_address[0]))
+                return "200 OK", user_id  # Return the user ID as well for future commands
+            else:
+                # Incorrect login
+                return "403 Wrong UserID or Password", None
+    except Exception as e:
+        return f"500 Internal Server Error: {e}", None
     
-def process_help_command(user_id=None):
+def process_help_command(user_id=None, invalid_command=None):
+    """
+    Process the 'HELP' command to display help messages and assist with incorrect commands.
+
+    Args:
+        user_id (int, optional): The ID of the user, if available. Defaults to None.
+        invalid_command (str, optional): The invalid command entered by the user. Defaults to None.
+
+    Returns:
+        str: The help message or assistance for incorrect commands.
+    """
     if user_id is None:
         help_message = """
         To use the system, please log in using the following command:
@@ -267,14 +318,34 @@ def process_help_command(user_id=None):
     - SELL <stock_symbol> <amount> <price> <user_id>: Sell stocks with the specified amount, price, and user ID.
     - LIST [<user_id>]: List all stocks. If no user ID is provided, list all stocks for the logged-in user.
     - BALANCE [<user_id>]: Display the balance. If no user ID is provided, display the balance for the logged-in user.
+    - LOOKUP <stock_name>: Search for stocks by name.
+    - DEPOSIT <amount>: Deposit funds into your account.
+    - LOGOUT: Log out from the system.
+    - WHO: Display active users (root user only).
     - HELP: Display this help message.
     - QUIT: Terminate the connection.
-    - SHUTDOWN: Shutdown the server (only accessible to the root user).
+    - SHUTDOWN: Shutdown the server (root user only).
         """
+
+    if invalid_command:
+        # Check if the invalid command is partially correct to provide suggestions
+        suggestions = []
+        available_commands = [
+            "LOGIN", "BUY", "SELL", "LIST", "BALANCE", "LOOKUP", "DEPOSIT", "LOGOUT", "WHO", "HELP", "QUIT", "SHUTDOWN"
+        ]
+        for command in available_commands:
+            if command.startswith(invalid_command.upper()):
+                suggestions.append(command)
+        
+        if suggestions:
+            return f"Did you mean one of these commands?: {' '.join(suggestions)}"
 
     return help_message
 
 def handle_shutdown_command(user_id, cursor):
+    """
+    Process the 'SHUTDOWN' command to shutdown the server.
+    """
     # Check if the user is root
     cursor.execute("SELECT ID FROM Users WHERE user_name = 'root'")
     root_user_id = cursor.fetchone()[0]
@@ -287,20 +358,110 @@ def handle_shutdown_command(user_id, cursor):
     else:
         return "Error: Only the root user has the authority to execute a server shutdown."
 
+def process_logout_command(cursor, user_id):
+    """
+    Process the 'LOGOUT' command to log out users.
+    """
+    # Delete the user from the ActiveUsers table
+    cursor.execute("DELETE FROM ActiveUsers WHERE user_id = ?", (user_id,))
+    return "200 OK"
 
+def process_who_command(cursor, user_id):
+    """
+    Process the 'WHO' command to display active users.
+    """
+    # Check if the user is root
+    if user_id != 5:  # Assuming root user ID is 5
+        return "403 Access denied: WHO command is only allowed for the root user."
 
+    # Fetch active users from the database
+    cursor.execute("SELECT user_name, ip_address FROM ActiveUsers")
+    active_users = cursor.fetchall()
+
+    if not active_users:
+        return "No active users found."
+
+    # Generate the response message with the list of active users
+    response = "200 OK\nThe list of active users:\n"
+    # Clear previous list
+    for user in active_users:
+        response += f"{user[0]} {user[1]}\n"
+
+    return response
+
+def process_lookup_command(cursor, command_parts):
+    """
+    Process the 'LOOKUP' command to search for stocks.
+    """
+    # Extract relevant information from command_parts
+    try:
+        stock_name = command_parts[1]
+    except IndexError:
+        return "400 invalid command, missing arguments"
+
+    # Search for the stock records matching the given name
+    cursor.execute('''
+        SELECT stock_symbol, stock_balance
+        FROM Stocks
+        WHERE stock_name LIKE ?
+    ''', ('%' + stock_name + '%',))
+    matched_stocks = cursor.fetchall()
+
+    if not matched_stocks:
+        return f"404 Your search for '{stock_name}' did not match any records."
+    
+    # Generate the response message with the list of matched records
+    response = f"200 OK\nFound {len(matched_stocks)} match{'es' if len(matched_stocks) > 1 else ''} for '{stock_name}':\n"
+    for stock in matched_stocks:
+        response += f"{stock[0]} {stock[1]}\n"
+
+    return response
+
+def process_deposit_command(conn, cursor, command_parts, client_address):
+    """
+    Process the 'DEPOSIT' command to deposit funds into a user's account.
+    """
+    try:
+        amount = float(command_parts[1])
+    except (IndexError, ValueError):
+        return "400 invalid command, missing or invalid amount"
+
+    # Fetch user_id from ActiveUsers table based on the client's IP address
+    cursor.execute("SELECT user_id FROM ActiveUsers WHERE ip_address = ?", (client_address[0],))
+    user_data = cursor.fetchone()
+
+    if not user_data:
+        return "403 not logged in, please login first"
+
+    user_id = user_data[0]
+
+    # Fetch user's balance
+    cursor.execute("SELECT usd_balance FROM Users WHERE ID = ?", (user_id,))
+    user_balance = cursor.fetchone()[0]
+
+    # Update the user's balance
+    new_balance = user_balance + amount
+    cursor.execute("UPDATE Users SET usd_balance = ? WHERE ID = ?", (new_balance, user_id))
+
+    # Commit the transaction
+    conn.commit()
+
+    # Generate appropriate response
+    response = f"200 OK\nDEPOSIT: New balance: ${new_balance}"
+    return response
 
 def handle_client(client_socket, client_address):
+    """
+    Handle client connections and requests.
+    """
     global is_server_running
     # Initialize the user_id as None to indicate that the client is not logged in
     user_id = None
+    conn = sqlite3.connect('database.db')  # Create a new connection
+    cursor = conn.cursor()  # Create a new cursor
 
     try:
         print(f"[*] Accepted connection from {client_address[0]}:{client_address[1]}")
-
-        # Individual connections to the database
-        conn = sqlite3.connect('database.db')
-        cursor = conn.cursor()
 
         # Handle client requests
         while True:
@@ -324,20 +485,53 @@ def handle_client(client_socket, client_address):
                     if len(command_parts) != 3:
                         response = "400 invalid command, missing arguments"
                     else:
-                        response, user_id = process_login_command(cursor, command_parts[1], command_parts[2])
+                        response, user_id = process_login_command(command_parts[1], command_parts[2], client_address)
                 else:
                     response = process_help_command()
             else:
                 command = command_parts[0]
 
                 if command == "BUY":
-                    response = process_buy_command(conn, cursor, command_parts)
+                    if user_id is None:
+                        response = "403 not logged in, please login first"
+                    else:
+                        response = process_buy_command(conn, cursor, command_parts)  # Pass conn and cursor here
                 elif command == "SELL":
-                    response = process_sell_command(conn, cursor, command_parts)
+                    if user_id is None:
+                        response = "403 not logged in, please login first"
+                    else:
+                        response = process_sell_command(conn, cursor, command_parts)  # Pass conn and cursor here
                 elif command == "LIST":
-                    response = process_list_command(user_id, cursor)
+                    if user_id is None:
+                        response = "403 not logged in, please login first"
+                    else:
+                        response = process_list_command(user_id, cursor)  # Pass cursor here
                 elif command == "BALANCE":
-                    response = process_balance_command(user_id, cursor)
+                    if user_id is None:
+                        response = "403 not logged in, please login first"
+                    else:
+                        response = process_balance_command(user_id, cursor)  # Pass cursor here
+                elif command == "LOOKUP":
+                    if user_id is None:
+                        response = "403 not logged in, please login first"
+                    else:
+                        response = process_lookup_command(cursor, command_parts)
+                elif command == "DEPOSIT":
+                        response = process_deposit_command(conn, cursor, command_parts, client_address)  # Pass client_address here
+                elif command == "LOGOUT":
+                    response = process_logout_command(cursor, user_id)  # Pass cursor here
+                    client_socket.send(response.encode())
+                    # Remove the user from ActiveUsers table
+                    cursor.execute("DELETE FROM ActiveUsers WHERE user_id = ?", (user_id,))
+                    conn.commit()
+                    client_socket.close()
+                    break
+                elif command == "WHO":
+                        if user_id is None:
+                            response = "403 not logged in, please login first"
+                        else:
+                            response = process_who_command(cursor, user_id)  # Pass cursor here
+
                 elif command == "HELP":
                     response = process_help_command(user_id)
                 elif command == "QUIT":
@@ -346,12 +540,16 @@ def handle_client(client_socket, client_address):
                     client_socket.close()
                     break
                 elif command == "SHUTDOWN":
-                    response = handle_shutdown_command(user_id, cursor)
-                    client_socket.send(response.encode())
-                    client_socket.close()
-                    break
+                    if user_id is None:
+                        response = "403 not logged in, please login first"
+                    else:
+                        response = handle_shutdown_command(user_id, cursor)  # Pass cursor here
+                        client_socket.send(response.encode())
+                        client_socket.close()
+                        break
                 else:
                     response = "400 invalid command"
+                   
 
             # Send the response back to the client
             client_socket.send(response.encode())
@@ -360,11 +558,18 @@ def handle_client(client_socket, client_address):
         print(f"An error occurred: {e}")
 
     finally:
+        # If the user is logged in and the client socket is still open, perform cleanup
+        if user_id is not None and not client_socket._closed:
+            # Remove the user from ActiveUsers table
+            cursor.execute("DELETE FROM ActiveUsers WHERE user_id = ?", (user_id,))
+            conn.commit()
+        # Close cursor and connection
+        cursor.close()
+        conn.close()
         # Close client socket
         client_socket.close()
 
-        # Close database connection
-        conn.close()
+        
 
 # Create a server socket
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
