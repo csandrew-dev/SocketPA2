@@ -320,7 +320,7 @@ def handle_client(client_socket, client_address):
                     client_socket.close()
                     break
                 elif command == "SHUTDOWN":
-                    response = handle_shutdown_command("root", True)
+                    response = handle_shutdown_command(user_id, cursor)
                     client_socket.send(response.encode())
                     client_socket.close()
                     break
