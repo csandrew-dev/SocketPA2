@@ -8,6 +8,9 @@ import threading
 SERVER_HOST = '127.0.0.1'
 SERVER_PORT = 12345
 
+#root user id
+root_user_id = 1
+
 # A global variable to keep track of whether the server is running
 is_server_running = True
 
@@ -50,26 +53,27 @@ cursor.execute('''
         user_id INTEGER NOT NULL,
         user_name TEXT NOT NULL,
         ip_address TEXT NOT NULL,
+        port TEXT NOT NULL,
         FOREIGN KEY (user_id) REFERENCES Users (ID)
     )
 ''')
 
 # Insert default user into Users table
-cursor.execute("SELECT * FROM Users WHERE user_name = ?", ('jd',))
+cursor.execute("SELECT * FROM Users WHERE user_name = ?", ('John',))
 existing_user = cursor.fetchone()
 
 if not existing_user:
     cursor.execute("INSERT INTO Users (first_name, last_name, user_name, password, usd_balance) VALUES (?, ?, ?, ?, ?)",
-                   ('John', 'Doe', 'jd', 'password', 100.0))
+                   ('John', 'Doe', 'John', 'John01', 100.0))
     conn.commit()
 
 # Insert root user for testing shutdown
-cursor.execute("SELECT * FROM Users WHERE user_name = ?", ('root',))
+cursor.execute("SELECT * FROM Users WHERE user_name = ?", ('Root',))
 root_user = cursor.fetchone()
 
 if not root_user:
     cursor.execute("INSERT INTO Users (first_name, last_name, user_name, password, usd_balance) VALUES (?, ?, ?, ?, ?)",
-                   ('Root', 'User', 'root', 'rootpassword', 1000000.0))
+                   ('Root', 'User', 'Root', 'Root01', 1000000.0))
     conn.commit()
 
 # Close database connection after initial setup
@@ -201,7 +205,7 @@ def list_records(user_id, is_root, cursor):
 .
     """
     if is_root:
-        return process_list_command(user_id=2, cursor=cursor)  # Assuming root user ID is 2
+        return process_list_command(user_id=5, cursor=cursor)  # Assuming root user ID is 5
     else:
         return process_list_command(user_id=user_id, cursor=cursor)
 
@@ -210,7 +214,7 @@ def process_list_command(user_id, cursor):
     Process the 'LIST' command to list all stocks.
     """
     # Fetch all records from the Stocks table
-    if user_id == 5:
+    if user_id == root_user_id:
         # If the user is root, fetch stock data with user names for all users
         cursor.execute('''
             SELECT Stocks.ID, Stocks.stock_symbol, Stocks.stock_name, Stocks.stock_balance,
@@ -235,7 +239,7 @@ def process_list_command(user_id, cursor):
     # Generate the response message with the list of records
     response = "200 OK\n"
     for stock in stocks_data:
-        if user_id == 5:
+        if user_id == root_user_id:
             user_full_name = f"{stock[4]} {stock[5]}" if stock[4] and stock[5] else "Unknown User"
             response += f"{stock[0]} {stock[1]} {stock[3]} {user_full_name} {stock[6]}\n"
         else:
@@ -248,7 +252,7 @@ def process_balance_command(user_id, cursor):
     Process the 'BALANCE' command to display user balances.
     """
     # Fetch all records from the Users table
-    if user_id == 2:
+    if user_id == root_user_id:
         cursor.execute("SELECT * FROM Users")
     else:
         cursor.execute("SELECT * FROM Users WHERE ID = ?", (user_id,))
@@ -283,8 +287,8 @@ def process_login_command(user_name, password, client_address):
             if user:
                 # Correct login
                 user_id = user[0]
-                cursor.execute("INSERT INTO ActiveUsers (user_id, user_name, ip_address) VALUES (?, ?, ?)",
-                                (user_id, user_name, client_address[0]))
+                cursor.execute("INSERT INTO ActiveUsers (user_id, user_name, ip_address, port) VALUES (?, ?, ?, ?)",
+                                (user_id, user_name, client_address[0], client_address[1]))
                 return "200 OK", user_id  # Return the user ID as well for future commands
             else:
                 # Incorrect login
@@ -371,7 +375,7 @@ def process_who_command(cursor, user_id):
     Process the 'WHO' command to display active users.
     """
     # Check if the user is root
-    if user_id != 5:  # Assuming root user ID is 5
+    if user_id != root_user_id:  # Assuming root user ID is 5
         return "403 Access denied: WHO command is only allowed for the root user."
 
     # Fetch active users from the database
@@ -389,7 +393,7 @@ def process_who_command(cursor, user_id):
 
     return response
 
-def process_lookup_command(cursor, command_parts):
+def process_lookup_command(user_id, cursor, command_parts):
     """
     Process the 'LOOKUP' command to search for stocks.
     """
@@ -399,21 +403,38 @@ def process_lookup_command(cursor, command_parts):
     except IndexError:
         return "400 invalid command, missing arguments"
 
-    # Search for the stock records matching the given name
-    cursor.execute('''
-        SELECT stock_symbol, stock_balance
-        FROM Stocks
-        WHERE stock_name LIKE ?
-    ''', ('%' + stock_name + '%',))
-    matched_stocks = cursor.fetchall()
+    if user_id == root_user_id:  # Assuming root user ID is 1
+        cursor.execute('''
+            SELECT stock_symbol, stock_balance, user_name
+            FROM Stocks
+            JOIN Users ON Users.ID = Stocks.user_id
+            WHERE stock_name LIKE ? OR stock_symbol LIKE ?
+        ''', ('%' + stock_name + '%', '%' + stock_name + '%'))
+
+        matched_stocks = cursor.fetchall()
+
+        # Generate the response message with the list of matched records
+        response = f"200 OK\nFound {len(matched_stocks)} match{'es' if len(matched_stocks) > 1 else ''} for '{stock_name}':\n"
+        for stock in matched_stocks:
+            response += f"{stock[0]} {stock[1]} {stock[2]}\n"
+    else:
+        # Search for the stock records matching the given name
+        cursor.execute('''
+            SELECT stock_symbol, stock_balance
+            FROM Stocks
+            JOIN Users ON Users.ID = Stocks.user_id
+            WHERE (stock_name LIKE ? OR stock_symbol LIKE ?) AND user_id = ?
+        ''', ('%' + stock_name + '%', '%' + stock_name + '%', user_id))
+
+        matched_stocks = cursor.fetchall()
+
+        # Generate the response message with the list of matched records
+        response = f"200 OK\nFound {len(matched_stocks)} match{'es' if len(matched_stocks) > 1 else ''} for '{stock_name}':\n"
+        for stock in matched_stocks:
+            response += f"{stock[0]} {stock[1]}\n"
 
     if not matched_stocks:
         return f"404 Your search for '{stock_name}' did not match any records."
-    
-    # Generate the response message with the list of matched records
-    response = f"200 OK\nFound {len(matched_stocks)} match{'es' if len(matched_stocks) > 1 else ''} for '{stock_name}':\n"
-    for stock in matched_stocks:
-        response += f"{stock[0]} {stock[1]}\n"
 
     return response
 
@@ -427,7 +448,7 @@ def process_deposit_command(conn, cursor, command_parts, client_address):
         return "400 invalid command, missing or invalid amount"
 
     # Fetch user_id from ActiveUsers table based on the client's IP address
-    cursor.execute("SELECT user_id FROM ActiveUsers WHERE ip_address = ?", (client_address[0],))
+    cursor.execute("SELECT user_id FROM ActiveUsers WHERE ip_address = ? AND port = ?", (client_address[0], client_address[1]))
     user_data = cursor.fetchone()
 
     if not user_data:
@@ -515,7 +536,7 @@ def handle_client(client_socket, client_address):
                     if user_id is None:
                         response = "403 not logged in, please login first"
                     else:
-                        response = process_lookup_command(cursor, command_parts)
+                        response = process_lookup_command(user_id, cursor, command_parts)
                 elif command == "DEPOSIT":
                         response = process_deposit_command(conn, cursor, command_parts, client_address)  # Pass client_address here
                 elif command == "LOGOUT":
