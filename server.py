@@ -3,6 +3,7 @@ import socket
 import sqlite3
 import sys
 import threading
+import os
 
 # Define server address and port
 SERVER_HOST = '127.0.0.1'
@@ -205,7 +206,7 @@ def list_records(user_id, is_root, cursor):
 .
     """
     if is_root:
-        return process_list_command(user_id=5, cursor=cursor)  # Assuming root user ID is 5
+        return process_list_command(user_id=1, cursor=cursor)  # Assuming root user ID is 1
     else:
         return process_list_command(user_id=user_id, cursor=cursor)
 
@@ -351,16 +352,18 @@ def handle_shutdown_command(user_id, cursor):
     Process the 'SHUTDOWN' command to shutdown the server.
     """
     # Check if the user is root
-    cursor.execute("SELECT ID FROM Users WHERE user_name = 'root'")
-    root_user_id = cursor.fetchone()[0]
-    if user_id == root_user_id:
-        global is_server_running
-        # Shutdown server and disconnect all clients
-        print("Server shutdown initiated. All connected clients will be terminated.")
-        is_server_running = False  # Set the variable to False to stop the server loop
-        return "Server is shutting down."
+    cursor.execute("SELECT ID FROM Users WHERE user_name = 'Root'")
+    root_user_row = cursor.fetchone()
+    if root_user_row is not None:
+        root_user_id = root_user_row[0]
+        if user_id == root_user_id:
+            print("Server shutdown initiated. All connected clients will be terminated.")
+            # Terminate server process abruptly
+            os._exit(0)  # This will terminate the server process instantly and abruptly
+        else:
+            return "Error: Only the root user has the authority to execute a server shutdown."
     else:
-        return "Error: Only the root user has the authority to execute a server shutdown."
+        return "Error: Root user not found."
 
 def process_logout_command(cursor, user_id):
     """
@@ -589,8 +592,6 @@ def handle_client(client_socket, client_address):
         conn.close()
         # Close client socket
         client_socket.close()
-
-        
 
 # Create a server socket
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
