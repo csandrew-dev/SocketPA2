@@ -7,7 +7,7 @@
 ### Josev@umich.edu
 
 ## Introduction: 
-For this assignment, We choose to write the server and client in the Python programming language. We chose SQlite for our database. 
+For this assignment, We choose to write the server and client in the Python programming language. We chose SQLite for our database. 
 
 ## How to Run Instructions
 To run the server, in your terminal, run `server.py`
@@ -16,9 +16,9 @@ To run the client, in another tab in your terminal, run `client.py {server addre
 
 ## Student Roles
 
-Jose:
+Jose: Developer and Tester
 
-Andrew: 
+Andrew: Tester and Developer
 
 ## Bugs(if any)
 
